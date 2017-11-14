@@ -152,11 +152,10 @@ namespace Microsoft.CSharp.RuntimeBinder.Errors
 
         private void ErrAppendParentCore(Symbol parent, SubstContext pctx)
         {
-            if (null == parent)
+            if (parent == null || parent == NamespaceSymbol.Root)
+            {
                 return;
-
-            if (parent == getBSymmgr().GetRootNS())
-                return;
+            }
 
             if (pctx != null && !pctx.FNop() && parent is AggregateSymbol agg && 0 != agg.GetTypeVarsAll().Count)
             {
@@ -243,8 +242,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Errors
                 return;
             }
 
-            TypeArray replacementTypeArray = null;
-            ErrAppendMethodParentSym(meth, pctx, out replacementTypeArray);
+            ErrAppendMethodParentSym(meth, pctx, out TypeArray replacementTypeArray);
             if (meth.IsConstructor())
             {
                 // Use the name of the parent class instead of the name "<ctor>".
@@ -391,9 +389,8 @@ namespace Microsoft.CSharp.RuntimeBinder.Errors
                     ErrAppendEvent((EventSymbol)sym, pctx);
                     break;
 
-                case SYMKIND.SK_AssemblyQualifiedNamespaceSymbol:
                 case SYMKIND.SK_NamespaceSymbol:
-                    if (sym == getBSymmgr().GetRootNS())
+                    if (sym == NamespaceSymbol.Root)
                     {
                         ErrAppendId(MessageID.GlobalNamespace);
                     }
@@ -574,7 +571,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Errors
                     }
 
                 case TypeKind.TK_VoidType:
-                    ErrAppendName(NameManager.Lookup(TokenFacts.GetText(TokenKind.Void)));
+                    ErrAppendName(NameManager.GetPredefinedName(PredefinedName.PN_VOID));
                     break;
 
                 case TypeKind.TK_ParameterModifierType:
@@ -678,16 +675,6 @@ namespace Microsoft.CSharp.RuntimeBinder.Errors
         private TypeManager GetTypeManager()
         {
             return m_globalSymbols.GetTypes();
-        }
-
-        private BSYMMGR getBSymmgr()
-        {
-            return m_globalSymbols.GetGlobalSymbols();
-        }
-
-        private int GetTypeID(CType type)
-        {
-            return 0;
         }
 
         private void ErrId(out string s, MessageID id)
