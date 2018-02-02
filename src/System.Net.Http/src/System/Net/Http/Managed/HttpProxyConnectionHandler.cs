@@ -5,6 +5,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -66,14 +67,62 @@ namespace System.Net.Http
             {
                 throw new InvalidOperationException(SR.net_http_invalid_proxy_scheme);
             }
+            Console.WriteLine("SendWithProxyAsync for {0}", request.RequestUri);
+            Console.WriteLine("Headers: {0}", request.Headers);
 
-            if (!HttpUtilities.IsSupportedNonSecureScheme(request.RequestUri.Scheme))
+            //HttpConnection connection;
+            HttpResponseMessage response;
+            HttpRequestMessage savedRequest = null;
+            string sslHostName = null;
+            HttpConnection connection = null;
+            HttpConnectionPool sslPool = null;
+            HttpConnectionKey key;
+            HttpConnectionKey sslKey;
+
+            if (HttpUtilities.IsSupportedNonSecureScheme(request.RequestUri.Scheme))
             {
+                //connection = await GetOrCreateConnection(request, proxyUri, cancellationToken).ConfigureAwait(false);
+                response = await GetConnectionAndSendAsync(request, proxyUri, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                sslHostName =  HttpUtilities.GetSslHostName(request);
+                sslKey = new HttpConnectionKey(request.RequestUri.IdnHost, request.RequestUri.Port, sslHostName);
+                sslPool = _connectionPools.GetOrAddPool(sslKey);
+                Console.WriteLine("sslPIll={0} from {1}", sslPool.GetHashCode(), sslHostName);
+                connection = await sslPool.GetConnectionAsync(request, cancellationToken, true).ConfigureAwait(false);
+
+                Console.WriteLine("Got connection to HTTPS destination conn={0}", connection);
+
+
+                //connection = await TryToGetConnection(request, request.RequestUri, cancellationToken).ConfigureAwait(false);
+              //  Console.WriteLine("Secure COnnection? {0}",  connection);
+                if (connection == null)
+                {
+                    key = new HttpConnectionKey(proxyUri.IdnHost, proxyUri.Port, null);
+                    HttpConnectionPool pool = _connectionPools.GetOrAddPool(key);
+                    connection = await pool.GetConnectionAsync(request, cancellationToken, false).ConfigureAwait(false);
+
+                     string s = String.Format("https://{0}:{1}",request.RequestUri.Host, request.RequestUri.Port);
+                     Uri uri = new Uri(s, UriKind.RelativeOrAbsolute);
+                     Console.WriteLine("GOINTG TO CONNECT for {0} ({1})", uri,s);
+                     savedRequest = request;
+                     request = new HttpRequestMessage(new HttpMethod("CONNECT"), uri);
+                }
+                else
+                {
+                        Console.WriteLine("Going with request to SSL destinatiopn");
+
+                }
+                response = await connection.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                Console.WriteLine("connect to proxy is dfone! rc={0}", response.StatusCode);
+
+
                 // TODO #23136: Implement SSL tunneling through proxy
-                throw new NotImplementedException("no support for SSL tunneling through proxy");
+                //throw new NotImplementedException("no support for SSL tunneling through proxy");
             }
 
-            HttpResponseMessage response = await GetConnectionAndSendAsync(request, proxyUri, cancellationToken).ConfigureAwait(false);
+            //HttpResponseMessage response = await GetConnectionAndSendAsync(request, proxyUri, cancellationToken).ConfigureAwait(false);
 
             // Handle proxy authentication
             if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
@@ -111,8 +160,10 @@ namespace System.Net.Http
 
                             if (await AuthenticationHelper.TrySetDigestAuthToken(request, credential, digestResponse, HttpKnownHeaderNames.ProxyAuthorization).ConfigureAwait(false))
                             {
+                                await response.Content.LoadIntoBufferAsync();
                                 response.Dispose();
-                                response = await _innerHandler.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                                //response = await _innerHandler.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                                response = await GetConnectionAndSendAsync(request, proxyUri, cancellationToken).ConfigureAwait(false);
 
                                 // Retry in case of nonce timeout in server.
                                 if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
@@ -140,6 +191,28 @@ namespace System.Net.Http
                     }
                 }
             }
+            // Process CONNECT requests.
+            if (savedRequest != null && response.StatusCode == HttpStatusCode.OK)
+            {
+                Console.WriteLine("Need to do SSL upgrade");
+                Stream stream = connection.GetStream();
+                //Proxy server agreed to upgrade to TLS.
+                SslStream sslStream = await ConnectHelper.EstablishSslConnectionAsync(_connectionPools.Settings, sslHostName, savedRequest, stream, cancellationToken).ConfigureAwait(false);
+//                                stream = sslStream;
+                Console.WriteLine("SSL is done");
+                connection.UpdateConnection(sslStream, sslPool);
+
+                Console.WriteLine("sslPIll={0} from {1}", sslPool.GetHashCode(), sslHostName);
+
+                 response = await connection.SendAsync(savedRequest, cancellationToken).ConfigureAwait(false);
+
+
+
+            }
+
+            Console.WriteLine("Function is done with {0}", response.StatusCode);
+
+
 
             return response;
         }

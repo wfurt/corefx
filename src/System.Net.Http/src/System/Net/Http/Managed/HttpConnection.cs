@@ -44,10 +44,10 @@ namespace System.Net.Http
         private static readonly byte[] s_hostKeyAndSeparator = Encoding.ASCII.GetBytes(HttpKnownHeaderNames.Host + ": ");
         private static readonly byte[] s_httpSchemeAndDelimiter = Encoding.ASCII.GetBytes(Uri.UriSchemeHttp + Uri.SchemeDelimiter);
 
-        private readonly HttpConnectionPool _pool;
-        private readonly Stream _stream;
+        private HttpConnectionPool _pool;
+        private Stream _stream;
         private readonly TransportContext _transportContext;
-        private readonly bool _usingProxy;
+        private bool _usingProxy;
         private readonly byte[] _idnHostAsciiBytes;
 
         private HttpRequestMessage _currentRequest;
@@ -106,6 +106,8 @@ namespace System.Net.Http
         {
             // Ensure we're only disposed once.  Dispose could be called concurrently, for example,
             // if the request and the response were running concurrently and both incurred an exception.
+            Console.WriteLine("Dispose on {0}", this.GetHashCode());
+
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 if (NetEventSource.IsEnabled) Trace("Connection closing.");
@@ -170,6 +172,7 @@ namespace System.Net.Http
         {
             await WriteBytesAsync(s_hostKeyAndSeparator, cancellationToken).ConfigureAwait(false);
 
+            Console.WriteLine("WriteHostHeaderAsync: _idnHostAsciiBytes={0} uri.IdnHost={1} ({2})", _idnHostAsciiBytes, _idnHostAsciiBytes, uri);
             await (_idnHostAsciiBytes != null ?
                 WriteBytesAsync(_idnHostAsciiBytes, cancellationToken) :
                 WriteAsciiStringAsync(uri.IdnHost, cancellationToken)).ConfigureAwait(false);
@@ -259,9 +262,20 @@ namespace System.Net.Http
                 if (_usingProxy)
                 {
                     // Proxied requests contain full URL
-                    Debug.Assert(request.RequestUri.Scheme == Uri.UriSchemeHttp);
-                    await WriteBytesAsync(s_httpSchemeAndDelimiter, cancellationToken).ConfigureAwait(false);
+                    //Debug.Assert(request.RequestUri.Scheme == Uri.UriSchemeHttp);
+                    if (request.RequestUri.Scheme == Uri.UriSchemeHttp)
+                    {
+                        await WriteBytesAsync(s_httpSchemeAndDelimiter, cancellationToken).ConfigureAwait(false);
+                    }
                     await WriteAsciiStringAsync(request.RequestUri.IdnHost, cancellationToken).ConfigureAwait(false);
+                    if (request.RequestUri.Scheme == Uri.UriSchemeHttps)
+                    {
+                        await WriteAsciiStringAsync(String.Format(":{0}", request.RequestUri.Port), cancellationToken).ConfigureAwait(false);
+                    }
+
+
+                    //await WriteBytesAsync(s_httpSchemeAndDelimiter, cancellationToken).ConfigureAwait(false);
+                    //await WriteAsciiStringAsync(request.RequestUri.IdnHost, cancellationToken).ConfigureAwait(false);
                 }
 
                 await WriteStringAsync(request.RequestUri.PathAndQuery, cancellationToken).ConfigureAwait(false);
@@ -295,6 +309,7 @@ namespace System.Net.Http
                 // wasn't sent, so as it's required by HTTP 1.1 spec, send one based on the Request Uri.
                 if (!request.HasHeaders || request.Headers.Host == null)
                 {
+                    Console.WriteLine("FIXINHG UP HOST header");
                     await WriteHostHeaderAsync(request.RequestUri, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -452,6 +467,14 @@ namespace System.Net.Http
                 {
                     responseStream = EmptyReadStream.Instance;
                     ReturnConnectionToPool();
+                }
+                else if (request.Method == new HttpMethod("CONNECT") && (int)response.StatusCode == 200)
+                {
+                    Console.WriteLine("CONNECT REQUEST OK");
+                    _currentRequest = null;
+                    _pendingException = null;
+
+                    responseStream = new RawConnectionStream(this);
                 }
                 else if (response.Content.Headers.ContentLength != null)
                 {
@@ -1144,6 +1167,8 @@ namespace System.Net.Http
             Debug.Assert(_readAheadTask == null, "Expected a previous initial read to already be consumed.");
             Debug.Assert(_currentRequest != null, "Expected the connection to be associated with a request.");
 
+            Console.WriteLine("ReturnConnectionToPool on {0} pool {1}", this.GetHashCode(), _pool.GetHashCode());
+
             // Disassociate the connection from a request.  If there's an in-flight request content still
             // being sent, it'll see this nulled out and stop sending.  Also clear out other request-specific content.
             _currentRequest = null;
@@ -1228,6 +1253,23 @@ namespace System.Net.Http
 
             // We're not putting the connection back in the pool. Dispose it.
             Dispose();
+        }
+
+        public Stream GetStream()
+        {
+            return _stream;
+        }
+
+        internal void UpdateConnection(Stream stream, HttpConnectionPool pool)
+        {
+            Console.WriteLine("Updated connection!!!!");
+            //_currentRequest = null;
+            _usingProxy = false;
+            _stream = stream;
+
+            _pool.DecrementConnectionCount();
+            _pool = pool;
+            _pool.IncrementConnectionCount();
         }
 
         private static bool EqualsOrdinal(string left, Span<byte> right)
