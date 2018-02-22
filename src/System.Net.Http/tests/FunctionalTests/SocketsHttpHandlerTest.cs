@@ -342,6 +342,29 @@ namespace System.Net.Http.Functional.Tests
         protected override bool UseSocketsHttpHandler => true;
     }
 
+    public sealed class SocketsHttpHandler_HttpClientHandler_Authentication_Test : HttpClientHandler_Authentication_Test
+    {
+        protected override bool UseSocketsHttpHandler => true;
+
+        [Theory]
+        [MemberData(nameof(Authentication_SocketsHttpHandler_TestData))]
+        public async void SocketsHttpHandler_Authentication_Succeeds(string authenticateHeader, bool result)
+        {
+            await HttpClientHandler_Authentication_Succeeds(authenticateHeader, result);
+        }
+
+        public static IEnumerable<object[]> Authentication_SocketsHttpHandler_TestData()
+        {
+            // These test cases pass on SocketsHttpHandler, fail everywhere else.
+            // TODO: #27113: Fix failing authentication test cases on different httpclienthandlers.
+            yield return new object[] { "Basic realm=\"testrealm1\" basic realm=\"testrealm1\"", true };
+            yield return new object[] { "Basic something digest something", true };
+            yield return new object[] { "Digest ", false };
+            yield return new object[] { "Digest realm=withoutquotes, nonce=withoutquotes", false };
+            yield return new object[] { "Digest realm=\"testrealm\", nonce=\"testnonce\", algorithm=\"myown\"", false };
+        }
+    }
+
     public sealed class SocketsHttpHandler_HttpClientHandler_DuplexCommunication_Test : HttpClientTestBase
     {
         protected override bool UseSocketsHttpHandler => true;
@@ -712,7 +735,8 @@ namespace System.Net.Http.Functional.Tests
     {
         protected override bool UseSocketsHttpHandler => true;
 
-        // TODO: Currently the subsequent tests sometimes fail/hang with WinHttpHandler / CurlHandler.
+        // TODO: ISSUE #27272
+        // Currently the subsequent tests sometimes fail/hang with WinHttpHandler / CurlHandler.
         // In theory they should pass with any handler that does appropriate connection pooling.
         // We should understand why they sometimes fail there and ideally move them to be
         // used by all handlers this test project tests.
@@ -774,6 +798,25 @@ namespace System.Net.Http.Functional.Tests
                         {
                             await Task.Delay(2000); // give client time to see the closing before next connect
                         }
+                    }
+                });
+            }
+        }
+
+        [Fact]
+        public async Task ServerSendsGarbageAfterInitialRequest_SubsequentRequestUsesDifferentConnection()
+        {
+            using (HttpClient client = CreateHttpClient())
+            {
+                await LoopbackServer.CreateServerAsync(async (server, uri) =>
+                {
+                    // Make multiple requests iteratively.
+                    for (int i = 0; i < 2; i++)
+                    {
+                        Task<string> request = client.GetStringAsync(uri);
+                        string response = LoopbackServer.GetHttpResponse() + "here is a bunch of garbage";
+                        await server.AcceptConnectionSendCustomResponseAndCloseAsync(response);
+                        await request;
                     }
                 });
             }
