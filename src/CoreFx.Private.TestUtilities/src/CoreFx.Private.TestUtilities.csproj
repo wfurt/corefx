@@ -84,6 +84,7 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="System.Console" />
     <Reference Include="System.Memory" />
     <Reference Include="Microsoft.Win32.Registry" />
     <Reference Include="System.Runtime" />
