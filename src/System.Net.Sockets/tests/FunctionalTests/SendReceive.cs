@@ -949,6 +949,118 @@ namespace System.Net.Sockets.Tests
                 return (client, server);
             }
         }
+
+        [Fact]
+        // [PlatformSpecific(~TestPlatforms.OSX)] // Not supported on OSX.
+        public async Task UdpReceiveGetsCanceledByDispose()
+        {
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            socket.BindToAnonymousPort(IPAddress.Loopback);
+
+            Task receiveTask = Task.Run(async () =>
+            {
+                await ReceiveAsync(socket, new ArraySegment<byte>(new byte[1]));
+            });
+
+            Task disposeTask = Task.Run(async () =>
+            {
+                // Wait a little so the receive is started.
+                await Task.Delay(100);
+
+                socket.Dispose();
+            });
+
+            Task timeoutTask = Task.Delay(30000);
+
+            Assert.NotSame(timeoutTask, await Task.WhenAny(disposeTask, receiveTask, timeoutTask));
+
+            await disposeTask;
+
+            try
+            {
+                await receiveTask;
+            }
+            catch (SocketException)
+            {}
+            catch (ObjectDisposedException)
+            {}
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        // [PlatformSpecific(~TestPlatforms.OSX)] // Not supported on OSX.
+        public async Task TcpReceiveSendGetsCanceledByDisposeOrClose(bool receiveOrSend)
+        {
+            // We try this a couple of times to deal with a timing race: if the Dispose happens
+            // before the operation is started, the peer won't see a connection aborted.
+            bool peerObservedConnectionAborted = false;
+            for (int i = 0; i < 10 && !peerObservedConnectionAborted; i++)
+            {
+                (Socket socket1, Socket socket2) = CreateConnectedSocketPair();
+                using (socket2)
+                {
+                    Task socketOperation = Task.Run(async () =>
+                    {
+                        if (receiveOrSend)
+                        {
+                            await ReceiveAsync(socket1, new ArraySegment<byte>(new byte[1]));
+                        }
+                        else
+                        {
+                            var buffer = new ArraySegment<byte>(new byte[4096]);
+                            while (true)
+                            {
+                                await SendAsync(socket1, buffer);
+                            }
+                        }
+                    });
+
+                    Task disposeTask = Task.Run(async () =>
+                    {
+                        // Wait a little so the operation is started.
+                        await Task.Delay(100);
+
+                        socket1.Dispose();
+                    });
+
+                    Task timeoutTask = Task.Delay(30000);
+
+                    Assert.NotSame(timeoutTask, await Task.WhenAny(disposeTask, socketOperation, timeoutTask));
+
+                    await disposeTask;
+
+                    try
+                    {
+                        await socketOperation;
+                    }
+                    catch (SocketException)
+                    {}
+                    catch (ObjectDisposedException)
+                    {}
+
+                    var receiveBuffer = new ArraySegment<byte>(new byte[4096]);
+                    while (true)
+                    {
+                        try
+                        {
+                            int received = await ReceiveAsync(socket2, receiveBuffer);
+                            if (received == 0)
+                            {
+                                break;
+                            }
+                        }
+                        catch (SocketException)
+                        {
+                            peerObservedConnectionAborted = true;
+                            break;
+                        }
+                    }
+                    peerObservedConnectionAborted = true; // TODO
+                }
+            }
+            Assert.True(peerObservedConnectionAborted);
+        }
     }
 
     public class SendReceive

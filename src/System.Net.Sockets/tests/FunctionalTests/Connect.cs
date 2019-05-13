@@ -85,6 +85,35 @@ namespace System.Net.Sockets.Tests
                 }
             }
         }
+
+        [Fact]
+        // [PlatformSpecific(~TestPlatforms.OSX)] // Not supported on OSX.
+        public async Task ConnectGetsCanceledByDispose()
+        {
+            var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            Task connectTask = Task.Run(async () =>
+            {
+                await ConnectAsync(client, new IPEndPoint(IPAddress.Parse("1.1.1.1"), 23));
+            });
+
+            Task disposeTask = Task.Run(async () =>
+            {
+                // Wait a little so the connect is started.
+                await Task.Delay(100);
+
+                client.Dispose();
+            });
+
+            Task timeoutTask = Task.Delay(30000);
+
+            Assert.NotSame(timeoutTask, await Task.WhenAny(disposeTask, connectTask, timeoutTask));
+
+            await disposeTask;
+
+            var connectException = await Assert.ThrowsAnyAsync<Exception>(() => connectTask);
+            Assert.True(connectException is ObjectDisposedException ||
+                        connectException is SocketException);
+        }
     }
 
     public sealed class ConnectSync : Connect<SocketHelperArraySync>
